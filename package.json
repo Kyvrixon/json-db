@@ -1,0 +1,38 @@
+{
+  "name": "@kyvrixon/json-db",
+  "description": "Simple json DB",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/lib",
+    "dist/index.d.ts",
+    "dist/index.js",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node dist/tests/test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.1",
+    "typescript": "^5.8.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kyvrixon/json-db.git"
+  },
+  "dependencies": {
+    "zod": "^3.25.64"
+  }
+}
