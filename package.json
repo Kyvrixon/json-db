@@ -33,6 +33,6 @@
     "url": "git+https://github.com/Kyvrixon/json-db.git"
   },
   "dependencies": {
-    "zod": "^3.25.67"
+    "zod": "^4.0.10"
   }
 }
