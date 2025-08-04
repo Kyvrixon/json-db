@@ -95,7 +95,7 @@ export interface BatchResult<T = any> {
   error?: string;
 }
 
-export class Database {
+export default class Database {
   private basePath: string;
   private options: DatabaseOptions;
   private lockedFiles: Set<string> = new Set();
@@ -584,5 +584,3 @@ export class Database {
     return await this.deleteManyFiltered(collection, filter, schema);
   }
 }
-
-export default Database;
