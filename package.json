@@ -1,7 +1,7 @@
 {
   "name": "@kyvrixon/json-db",
   "description": "A simple, feature rich JSON database solution. Designed for Bun",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
