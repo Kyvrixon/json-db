@@ -1,7 +1,7 @@
 {
   "name": "@kyvrixon/json-db",
-  "description": "Simple json DB",
-  "version": "0.0.1",
+  "description": "A simple, feature rich JSON database solution. Designed for Bun",
+  "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -12,27 +12,69 @@
   },
   "types": "./dist/index.d.ts",
   "files": [
-    "dist/lib",
-    "dist/index.d.ts",
-    "dist/index.js",
+    "dist/",
     "package.json",
+    "bun.lock",
     "README.md",
-    "CHANGELOG.md",
     "tsconfig.json"
   ],
-  "scripts": {
-    "build": "tsc",
-    "test": "node dist/tests/test.js"
-  },
   "devDependencies": {
-    "@types/node": "^24.1.0",
-    "typescript": "^5.8.3"
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.2"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Kyvrixon/json-db.git"
   },
+  "keywords": [
+    "encryption",
+    "aes",
+    "aes256",
+    "aes-256-gcm",
+    "gcm",
+    "pbkdf2",
+    "nodejs",
+    "node",
+    "node.js",
+    "crypto",
+    "crypto module",
+    "cryptography",
+    "secure",
+    "secure data",
+    "secure storage",
+    "data encryption",
+    "password encryption",
+    "password-based encryption",
+    "symmetric encryption",
+    "string encryption",
+    "text encryption",
+    "secure strings",
+    "typescript",
+    "javascript",
+    "secure nodejs",
+    "key derivation",
+    "key stretching",
+    "auth tag",
+    "iv",
+    "salt",
+    "buffer encryption",
+    "base64 encryption",
+    "decrypt",
+    "encrypt",
+    "encryptor",
+    "kyvrixon",
+    "custom encryption",
+    "data security",
+    "token encryption",
+    "config encryption",
+    "secure JSON",
+    "lightweight encryption",
+    "minimal crypto",
+    "zero dependency encryption"
+  ],
   "dependencies": {
-    "zod": "^4.0.10"
+    "zod": "^4.0.14"
   }
 }
