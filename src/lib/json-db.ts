@@ -18,10 +18,11 @@ export interface DatabaseOptions {
 
 /**
  * Represents a set of query operators for filtering data.
+ * All operators are properly typed to match the field type T.
  *
  * @template T - The type of the value being queried.
  */
-export interface QueryOperators<T = any> {
+export interface QueryOperators<T> {
   /**
    * Matches values that are equal to the specified value.
    */
@@ -32,68 +33,76 @@ export interface QueryOperators<T = any> {
   $notEquals?: T;
   /**
    * Matches values that are greater than the specified value.
+   * Only available for number, string, and Date types.
    */
-  $greaterThan?: T;
+  $greaterThan?: T extends number | string | Date ? T : never;
   /**
    * Matches values that are greater than or equal to the specified value.
+   * Only available for number, string, and Date types.
    */
-  $greaterThanOrEqual?: T;
+  $greaterThanOrEqual?: T extends number | string | Date ? T : never;
   /**
    * Matches values that are less than the specified value.
+   * Only available for number, string, and Date types.
    */
-  $lessThan?: T;
+  $lessThan?: T extends number | string | Date ? T : never;
   /**
    * Matches values that are less than or equal to the specified value.
+   * Only available for number, string, and Date types.
    */
-  $lessThanOrEqual?: T;
+  $lessThanOrEqual?: T extends number | string | Date ? T : never;
   /**
    * Matches values that are included in the specified array.
+   * For array fields, matches if any element is in the provided array.
+   * For non-array fields, matches if the value is in the provided array.
    */
-  $in?: T extends any[] ? T[number][] : T[];
+  $in?: T extends readonly (infer U)[] ? U[] : T[];
   /**
    * Matches values that are not included in the specified array.
+   * For array fields, matches if no element is in the provided array.
+   * For non-array fields, matches if the value is not in the provided array.
    */
-  $notIn?: T extends any[] ? T[number][] : T[];
+  $notIn?: T extends readonly (infer U)[] ? U[] : T[];
   /**
-   * Checks if the value exists (true) or does not exist (false).
+   * Checks if the field exists (true) or does not exist (false).
    */
   $exists?: boolean;
   /**
    * Matches string values using the specified regular expression.
+   * Only available for string types.
    */
-  $regex?: RegExp;
+  $regex?: T extends string ? RegExp : never;
   /**
    * Matches arrays with the specified number of elements.
+   * Only available for array types.
    */
-  $arraySize?: number;
+  $arraySize?: T extends readonly any[] ? number : never;
 }
 
+/**
+ * Main database filter type with full autocomplete support for field names
+ * and proper typing for each field's operators.
+ */
 export type DatabaseFilter<T> = {
+  /**
+   * Field-based filters with autocomplete support.
+   * Each field supports direct value matching or query operators based on its type.
+   */
   [K in keyof T]?: T[K] | QueryOperators<T[K]>;
 } & {
+  /**
+   * Logical AND - all conditions must be true
+   */
   $and?: DatabaseFilter<T>[];
+  /**
+   * Logical OR - at least one condition must be true
+   */
   $or?: DatabaseFilter<T>[];
+  /**
+   * Logical NOT - the condition must be false
+   */
   $not?: DatabaseFilter<T>;
 };
-
-export interface BatchWriteOperation<T = any> {
-  type: 'write' | 'delete';
-  collection: string;
-  id?: string;
-  data?: T;
-}
-
-export interface BatchReadOperation {
-  collection: string;
-  id?: string;
-  filter?: DatabaseFilter<any>;
-}
-
-export interface BatchResult<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-}
 
 export default class Database {
   private basePath: string;
@@ -113,6 +122,8 @@ export default class Database {
    * Ensures a directory exists, creating it if necessary
    */
   private async ensureDirectoryExists(dirPath: string): Promise<void> {
+    if (!this.options.createDirectory) return;
+    
     try {
       await fs.access(dirPath);
     } catch {
@@ -121,20 +132,13 @@ export default class Database {
   }
 
   /**
-   * Gets the full file path for a collection
-   */
-  private getCollectionDir(collection: string): string {
-    return path.join(this.basePath, collection);
-  }
-
-  /**
    * Acquires a memory-only lock for file operations
    */
-  private async acquireLock(file?: string): Promise<void> {
-    if (!file) return;
+  private async acquireLock(file: string): Promise<void> {
     let attempts = 0;
     const maxAttempts = 100;
     const lockDelay = 10;
+    
     while (attempts < maxAttempts) {
       if (!this.lockedFiles.has(file)) {
         this.lockedFiles.add(file);
@@ -143,279 +147,194 @@ export default class Database {
       attempts++;
       await new Promise(resolve => setTimeout(resolve, lockDelay));
     }
+    
     throw new Error('Could not acquire memory lock for file: ' + file);
   }
 
   /**
    * Releases a memory-only lock for file operations
    */
-  private async releaseLock(file?: string): Promise<void> {
-    if (!file) return;
+  private releaseLock(file: string): void {
     this.lockedFiles.delete(file);
+  }
+
+  /**
+   * Writes data to a JSON file atomically with memory lock
+   */
+  private async writeJSONFile<T>(filePath: string, data: T): Promise<void> {
+    await this.acquireLock(filePath);
+    
+    try {
+      const tempPath = `${filePath}.tmp`;
+      await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8');
+      await fs.rename(tempPath, filePath);
+    } finally {
+      this.releaseLock(filePath);
+    }
   }
 
   /**
    * Reads and parses a JSON file safely
    */
-  private async readJSONFile<T = any>(filePath: string, schema?: z.ZodSchema<T>): Promise<T> {
+  private async readJSONFile<T>(filePath: string, schema?: z.ZodSchema<T>): Promise<T | null> {
     try {
       await fs.access(filePath);
     } catch {
-      return null as T;
+      return null;
     }
+    
     const content = await fs.readFile(filePath, 'utf-8');
     const data = JSON.parse(content);
+    
     if (schema && this.options.validateOnRead) {
       return schema.parse(data);
     }
+    
     return data;
-  }
-
-  /**
-   * Writes data to a JSON file atomically (memory lock)
-   */
-  private async writeJSONFile<T = any>(filePath: string, data: T): Promise<void> {
-    await this.acquireLock(filePath);
-    try {
-      await this.writeJSONFileUnsafe(filePath, data);
-    } finally {
-      await this.releaseLock(filePath);
-    }
-  }
-
-  /**
-   * Writes data to a JSON file without acquiring a lock (assumes lock is already held)
-   */
-  private async writeJSONFileUnsafe<T = any>(filePath: string, data: T): Promise<void> {
-    const tempPath = `${filePath}.tmp`;
-    await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8');
-    await fs.rename(tempPath, filePath);
   }
 
   /**
    * Validates data against a Zod schema
    */
-  async validate<T>(data: unknown, schema: z.ZodSchema<T>): Promise<T> {
+  validate<T>(data: unknown, schema: z.ZodSchema<T>): T {
     return schema.parse(data);
   }
 
   /**
-   * Reads a single document from a collection
+   * Writes a document to a path-based location
+   * Example: await db.write("users/123", myData) creates this.basePath/users/123.json
    */
-  async read<T = any>(collection: string, id: string, schema?: z.ZodSchema<T>): Promise<T | null> {
-    const dirPath = this.getCollectionDir(collection);
-    const filePath = path.join(dirPath, `${id}.json`);
-    return await this.readJSONFile(filePath, schema);
-  }
-
-  /**
-   * Reads all documents from a collection
-   */
-  async readAll<T = any>(collection: string, schema?: z.ZodSchema<T>): Promise<Map<string, T>> {
-    const dirPath = this.getCollectionDir(collection);
-    try {
-      await fs.access(dirPath);
-    } catch {
-      return new Map();
-    }
-    const files = (await fs.readdir(dirPath)).filter(f => f.endsWith('.json'));
-    const result = new Map<string, T>();
-    for (const file of files) {
-      const id = path.basename(file, '.json');
-      const data = await this.readJSONFile<T>(path.join(dirPath, file), schema);
-      if (data !== null) result.set(id, data);
-    }
-    return result;
-  }
-
-  /**
-   * Reads all documents from a collection, optionally filtered
-   */
-  async readAllFiltered<T = any>(collection: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<Map<string, T>> {
-    const all = await this.readAll(collection, schema);
-    if (!filter || Object.keys(filter).length === 0) return all;
-    const result = new Map<string, T>();
-    for (const [id, doc] of all.entries()) {
-      if (this.matchesDocument(doc, filter)) result.set(id, doc);
-    }
-    return result;
-  }
-
-  /**
-   * Writes a single document to a collection
-   */
-  async write<T = any>(collection: string, id: string, data: T, schema?: z.ZodSchema<T>): Promise<void> {
-    const dirPath = this.getCollectionDir(collection);
-    await this.ensureDirectoryExists(dirPath);
+  async write<T>(filePath: string, data: T, schema?: z.ZodSchema<T>): Promise<void> {
+    // Validate data if schema is provided
     if (schema) {
       schema.parse(data);
     }
-    const filePath = path.join(dirPath, `${id}.json`);
-    await this.writeJSONFile(filePath, data);
-  }
 
-  /**
-   * Writes multiple documents to a collection
-   */
-  async writeMany<T = any>(collection: string, documents: Record<string, T>, schema?: z.ZodSchema<T>): Promise<void> {
-    const dirPath = this.getCollectionDir(collection);
+    // Parse the path to separate directory and filename
+    const fullPath = path.join(this.basePath, filePath);
+    const dirPath = path.dirname(fullPath);
+    const fileName = path.basename(fullPath);
+    
+    // Ensure directory exists
     await this.ensureDirectoryExists(dirPath);
-    for (const [id, data] of Object.entries(documents)) {
-      if (schema) {
-        schema.parse(data);
-      }
-      const filePath = path.join(dirPath, `${id}.json`);
-      await this.writeJSONFile(filePath, data);
-    }
+    
+    // Create the final file path with .json extension
+    const jsonFilePath = path.join(dirPath, `${fileName}.json`);
+    
+    // Write the file with lock protection
+    await this.writeJSONFile(jsonFilePath, data);
   }
 
   /**
-   * Deletes a single document from a collection
+   * Reads a document from a path-based location
    */
-  async delete(collection: string, id: string): Promise<boolean> {
-    const dirPath = this.getCollectionDir(collection);
-    const filePath = path.join(dirPath, `${id}.json`);
+  async read<T>(filePath: string, schema?: z.ZodSchema<T>): Promise<T | null> {
+    const fullPath = path.join(this.basePath, filePath);
+    const dirPath = path.dirname(fullPath);
+    const fileName = path.basename(fullPath);
+    const jsonFilePath = path.join(dirPath, `${fileName}.json`);
+    
+    return await this.readJSONFile(jsonFilePath, schema);
+  }
+
+  /**
+   * Reads all documents from a directory
+   */
+  async readAll<T>(dirPath: string, schema?: z.ZodSchema<T>): Promise<Map<string, T>> {
+    const fullDirPath = path.join(this.basePath, dirPath);
+    
     try {
-      await fs.access(filePath);
+      await fs.access(fullDirPath);
     } catch {
-      return false;
+      return new Map();
     }
-    await this.acquireLock(filePath);
-    try {
-      await fs.unlink(filePath);
-      return true;
-    } finally {
-      await this.releaseLock(filePath);
-    }
-  }
-
-  /**
-   * Deletes multiple documents from a collection
-   */
-  async deleteMany(collection: string, ids: string[]): Promise<number> {
-    const dirPath = this.getCollectionDir(collection);
-    let deletedCount = 0;
-    for (const id of ids) {
-      const filePath = path.join(dirPath, `${id}.json`);
-      try {
-        await fs.access(filePath);
-      } catch {
-        continue;
-      }
-      await this.acquireLock(filePath);
-      try {
-        await fs.unlink(filePath);
-        deletedCount++;
-      } finally {
-        await this.releaseLock(filePath);
+    
+    const files = (await fs.readdir(fullDirPath)).filter(f => f.endsWith('.json'));
+    const result = new Map<string, T>();
+    
+    for (const file of files) {
+      const id = path.basename(file, '.json');
+      const data = await this.readJSONFile<T>(path.join(fullDirPath, file), schema);
+      if (data !== null) {
+        result.set(id, data);
       }
     }
-    return deletedCount;
-  }
-
-  /**
-   * Deletes documents from a collection by filter
-   */
-  async deleteManyFiltered<T = any>(collection: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<number> {
-    const all = await this.readAllFiltered(collection, filter, schema);
-    return await this.deleteMany(collection, Array.from(all.keys()));
-  }
-
-  /**
-   * Counts documents in a collection
-   */
-  async count(collection: string): Promise<number> {
-    const dirPath = this.getCollectionDir(collection);
-    try {
-      await fs.access(dirPath);
-    } catch {
-      return 0;
-    }
-    return (await fs.readdir(dirPath)).filter(f => f.endsWith('.json')).length;
-  }
-
-  /**
-   * Counts documents in a collection by filter
-   */
-  async countFiltered<T = any>(collection: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<number> {
-    const all = await this.readAllFiltered(collection, filter, schema);
-    return all.size;
-  }
-
-  /**
-   * Counts files in the database directory
-   */
-  async countFiles(): Promise<number> {
-    try {
-      await fs.access(this.basePath);
-    } catch {
-      return 0;
-    }
-    let count = 0;
-    const dirs = (await fs.readdir(this.basePath)).filter(async f => {
-      const stat = await fs.stat(path.join(this.basePath, f));
-      return stat.isDirectory();
-    });
-    for (const dir of dirs) {
-      count += (await fs.readdir(path.join(this.basePath, dir))).filter(f => f.endsWith('.json')).length;
-    }
-    return count;
-  }
-
-  /**
-   * Lists all collections (JSON files)
-   */
-  async listCollections(): Promise<string[]> {
-    try {
-      await fs.access(this.basePath);
-    } catch {
-      return [];
-    };
-
-    const entries = await fs.readdir(this.basePath);
-    const result: string[] = [];
-    for (const entry of entries) {
-      const stat = await fs.stat(path.join(this.basePath, entry));
-      if (stat.isDirectory()) result.push(entry);
-    }
+    
     return result;
+  }
+
+  /**
+   * Finds documents matching a filter in a directory
+   */
+  async find<T>(dirPath: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<Map<string, T>> {
+    const allData = await this.readAll<T>(dirPath, schema);
+    
+    if (!filter || Object.keys(filter).length === 0) {
+      return allData;
+    }
+    
+    const result = new Map<string, T>();
+    
+    for (const [id, document] of allData.entries()) {
+      if (this.matchesDocument(document, filter)) {
+        result.set(id, document);
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Finds the first document matching a filter
+   */
+  async findOne<T>(dirPath: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<{ id: string; data: T } | null> {
+    const allData = await this.readAll<T>(dirPath, schema);
+    
+    for (const [id, document] of allData.entries()) {
+      if (this.matchesDocument(document, filter)) {
+        return { id, data: document };
+      }
+    }
+    
+    return null;
   }
 
   /**
    * Checks if a value matches a filter condition
    */
   private matchesFilter<T>(value: T, filter: QueryOperators<T>): boolean {
-    if (filter.$equals !== undefined) return value === filter.$equals;
-    if (filter.$notEquals !== undefined) return value !== filter.$notEquals;
-    if (filter.$greaterThan !== undefined && filter.$greaterThan !== null) return value > filter.$greaterThan;
-    if (filter.$greaterThanOrEqual !== undefined && filter.$greaterThanOrEqual !== null) return value >= filter.$greaterThanOrEqual;
-    if (filter.$lessThan !== undefined && filter.$lessThan !== null) return value < filter.$lessThan;
-    if (filter.$lessThanOrEqual !== undefined && filter.$lessThanOrEqual !== null) return value <= filter.$lessThanOrEqual;
+    // Check each operator - ALL must pass for the filter to match
+    if (filter.$equals !== undefined && value !== filter.$equals) return false;
+    if (filter.$notEquals !== undefined && value === filter.$notEquals) return false;
+    if (filter.$greaterThan !== undefined && filter.$greaterThan !== null && !(value > filter.$greaterThan)) return false;
+    if (filter.$greaterThanOrEqual !== undefined && filter.$greaterThanOrEqual !== null && !(value >= filter.$greaterThanOrEqual)) return false;
+    if (filter.$lessThan !== undefined && filter.$lessThan !== null && !(value < filter.$lessThan)) return false;
+    if (filter.$lessThanOrEqual !== undefined && filter.$lessThanOrEqual !== null && !(value <= filter.$lessThanOrEqual)) return false;
 
     if (filter.$in !== undefined) {
       if (Array.isArray(value)) {
-        // For array values, check if any element in the value array matches any element in the filter array
-        return value.some(item => filter.$in!.includes(item));
+        if (!value.some(item => filter.$in!.includes(item))) return false;
       } else {
-        // For non-array values, check if the value is in the filter array
-        return filter.$in.includes(value as any);
+        if (!filter.$in.includes(value as any)) return false;
       }
     }
 
     if (filter.$notIn !== undefined) {
       if (Array.isArray(value)) {
-        // For array values, check if no element in the value array matches any element in the filter array
-        return !value.some(item => filter.$notIn!.includes(item));
+        if (value.some(item => filter.$notIn!.includes(item))) return false;
       } else {
-        // For non-array values, check if the value is not in the filter array
-        return !filter.$notIn.includes(value as any);
+        if (filter.$notIn.includes(value as any)) return false;
       }
     }
 
-    if (filter.$exists !== undefined) return (value !== undefined && value !== null) === filter.$exists;
-    if (filter.$regex !== undefined && typeof value === 'string') return filter.$regex.test(value);
-    if (filter.$arraySize !== undefined && Array.isArray(value)) return value.length === filter.$arraySize;
+    if (filter.$exists !== undefined && (value !== undefined && value !== null) !== filter.$exists) return false;
+    if (filter.$regex !== undefined && typeof value === 'string' && !filter.$regex.test(value)) return false;
+    if (filter.$arraySize !== undefined) {
+      if (!Array.isArray(value)) return false; // Must be an array to match arraySize
+      if (value.length !== filter.$arraySize) return false;
+    }
 
+    // If we reach here, all specified operators passed
     return true;
   }
 
@@ -443,7 +362,7 @@ export default class Database {
       const documentValue = (document as any)[key];
 
       if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        if (!this.matchesFilter(documentValue, value as QueryOperators)) {
+        if (!this.matchesFilter(documentValue, value as QueryOperators<any>)) {
           return false;
         }
       } else {
@@ -457,130 +376,54 @@ export default class Database {
   }
 
   /**
-   * Finds documents matching a database filter
+   * Deletes a document from a path-based location
    */
-  async find<T = any>(collection: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<Map<string, T>> {
-    const allData = await this.readAll(collection, schema);
-    const result = new Map<string, T>();
-    for (const [id, document] of allData.entries()) {
-      if (this.matchesDocument(document, filter)) {
-        result.set(id, document);
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Finds the first document matching a filter
-   */
-  async findOne<T = any>(collection: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<{ id: string; data: T } | null> {
-    const allData = await this.readAll(collection, schema);
-    for (const [id, document] of allData.entries()) {
-      if (this.matchesDocument(document, filter)) {
-        return { id, data: document };
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Performs batch write operations (memory lock)
-   */
-  async batchWrite(operations: BatchWriteOperation[]): Promise<BatchResult[]> {
-    const results: BatchResult[] = [];
-    const operationsByCollection = new Map<string, BatchWriteOperation[]>();
-    for (const op of operations) {
-      if (!operationsByCollection.has(op.collection)) {
-        operationsByCollection.set(op.collection, []);
-      }
-      operationsByCollection.get(op.collection)!.push(op);
-    }
-    for (const [collection, ops] of operationsByCollection) {
-      const dirPath = this.getCollectionDir(collection);
-      await this.ensureDirectoryExists(dirPath);
-      for (const op of ops) {
-        try {
-          const filePath = path.join(dirPath, `${op.id}.json`);
-          if (op.type === 'write' && op.id && op.data !== undefined) {
-            await this.acquireLock(filePath);
-            try {
-              await this.writeJSONFileUnsafe(filePath, op.data);
-              results.push({ success: true });
-            } finally {
-              await this.releaseLock(filePath);
-            }
-          } else if (op.type === 'delete' && op.id) {
-            try {
-              await fs.access(filePath);
-            } catch {
-              results.push({ success: false, error: 'Document not found' });
-              continue;
-            }
-            await this.acquireLock(filePath);
-            try {
-              await fs.unlink(filePath);
-              results.push({ success: true });
-            } finally {
-              await this.releaseLock(filePath);
-            }
-          } else {
-            results.push({ success: false, error: 'Invalid operation' });
-          }
-        } catch (error) {
-          results.push({ success: false, error: String(error) });
-        }
-      }
-    }
-    return results;
-  }
-
-  /**
-   * Performs batch read operations
-   */
-  async batchRead(operations: BatchReadOperation[]): Promise<BatchResult[]> {
-    const results: BatchResult[] = [];
-    for (const op of operations) {
-      try {
-        if (op.id) {
-          const data = await this.read(op.collection, op.id);
-          results.push({ success: true, data });
-        } else if (op.filter) {
-          const data = await this.readAllFiltered(op.collection, op.filter);
-          results.push({ success: true, data });
-        } else {
-          const data = await this.readAll(op.collection);
-          results.push({ success: true, data });
-        }
-      } catch (error) {
-        results.push({ success: false, error: String(error) });
-      }
-    }
-    return results;
-  }
-
-  /**
-   * Drops (deletes) an entire collection (memory lock)
-   */
-  async dropCollection(collection: string): Promise<boolean> {
-    const dirPath = this.getCollectionDir(collection);
+  async delete(filePath: string): Promise<boolean> {
+    const fullPath = path.join(this.basePath, filePath);
+    const dirPath = path.dirname(fullPath);
+    const fileName = path.basename(fullPath);
+    const jsonFilePath = path.join(dirPath, `${fileName}.json`);
+    
     try {
-      await fs.access(dirPath);
+      await fs.access(jsonFilePath);
     } catch {
       return false;
     }
-    await this.acquireLock(dirPath);
+    
+    await this.acquireLock(jsonFilePath);
+    
     try {
-      await fs.rm(dirPath, { recursive: true, force: true });
+      await fs.unlink(jsonFilePath);
       return true;
     } finally {
-      await this.releaseLock(dirPath);
+      this.releaseLock(jsonFilePath);
     }
   }
 
   /**
-   * Drops (deletes) documents in a collection by filter
+   * Deletes a whole directory and all its contents
    */
-  async dropCollectionFiltered<T = any>(collection: string, filter: DatabaseFilter<T> = {}, schema?: z.ZodSchema<T>): Promise<number> {
-    return await this.deleteManyFiltered(collection, filter, schema);
+  async drop(dirPath: string): Promise<boolean> {
+    const fullDirPath = path.join(this.basePath, dirPath);
+    try {
+      await fs.access(fullDirPath);
+    } catch {
+      return false;
+    }
+    await this.acquireLock(fullDirPath);
+    try {
+      await fs.rm(fullDirPath, { recursive: true, force: true });
+      return true;
+    } finally {
+      this.releaseLock(fullDirPath);
+    }
+  }
+
+  /**
+   * Creates an empty directory (and parents if needed)
+   */
+  async create(dirPath: string): Promise<void> {
+    const fullDirPath = path.join(this.basePath, dirPath);
+    await this.ensureDirectoryExists(fullDirPath);
   }
 }
